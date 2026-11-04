@@ -1,97 +1,74 @@
-# LanRead for Android (澜阅)
+# LanRead for Android — AI-assisted EPUB reader
 
-[![Platform](https://img.shields.io/badge/platform-Android-brightgreen.svg)](https://developer.android.com)
-[![Kotlin](https://img.shields.io/badge/Kotlin-2.2.20-blue.svg)](https://kotlinlang.org)
-[![Compose](https://img.shields.io/badge/Jetpack%20Compose-BOM%202025.10.01-purple.svg)](https://developer.android.com/jetpack/compose)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+English | [简体中文](README_CN.md)
 
-**LanRead (澜阅)** is an AI-powered, privacy-first EPUB reader for Android, ported from Isla Reader with Kotlin and Jetpack Compose.
+[![Android](https://img.shields.io/badge/Android-8.0%2B-3DDC84?logo=android&logoColor=white)](https://developer.android.com/)
+[![Kotlin](https://img.shields.io/badge/Kotlin-2.2.20-7F52FF?logo=kotlin&logoColor=white)](https://kotlinlang.org/)
+[![Jetpack Compose](https://img.shields.io/badge/Jetpack%20Compose-Material%203-4285F4)](https://developer.android.com/jetpack/compose)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-> “把每本书变成一位可对话的导师：获取、阅读、理解与交流，一站式完成。”
+LanRead (澜阅) is an EPUB reading app for Android, built with Kotlin and Jetpack Compose. Import books, organize a library, highlight passages and take notes, track reading progress, and use AI to summarize, translate, explain, or ask questions about what you read.
 
----
+**Platforms:** Android (this repository) · [iOS and iPadOS source](https://github.com/visiontrail/LanRead) · [Website](https://isla-reader.top)
+
+The Android app is a sibling implementation of LanRead for iOS. Features and release availability can differ between platforms; the repositories are maintained separately.
 
 ## Features
 
-### 📖 Reading & Library
-- **EPUB Engine**: Fast parsing, table of contents, pagination, font/typography adjustment, reading themes (Light, Dark, Sepia).
-- **Library Management**: Filter by status (*Want to Read*, *Reading*, *Finished*, *Paused*), search by title/author, book details & file statistics.
-- **Highlights & Notes**: Inline text selection, multi-color highlighting, note editing, and quick navigation.
-- **Bookmarks & Progress**: Chapter progress tracking, bookmarks management, reading stats & daily reading goals.
+- **EPUB reading:** import EPUB files, navigate chapters and the table of contents, turn pages, and adjust typography and reading themes.
+- **Library:** search by title or author and organize books by reading status or favorites.
+- **Highlights and notes:** select passages, highlight them, add notes, and return to saved locations.
+- **Bookmarks and progress:** save positions and review reading progress, time, and daily goals.
+- **AI-assisted reading:** generate a start-reading summary or chapter skimming summaries, and use selected text for translation, explanations, and questions. AI availability depends on network access and a working service configuration.
+- **Languages:** app resources include English, Simplified Chinese, Japanese, and Korean.
 
-### 🤖 AI-Assisted Reading
-- **Start-Reading Summary**: AI-generated chapter summaries and key takeaways to warm up your reading session.
-- **Contextual In-Book AI**: Select text to translate, explain concepts, or ask questions directly with streaming AI responses.
-- **Local-First & Privacy**: Local database caching (Room), offline capability, and secure credential handling.
+Reading data is stored on the device using Room and DataStore. AI requests send relevant content to a network service; see the app's AI consent and privacy information before using those features. The project also integrates Google Mobile Ads. The iOS project has a Notion integration; check the Android implementation before assuming feature or sync parity.
 
-### 🌐 Internationalization & Accessibility
-- Localized in **English**, **简体中文**, **日本語**, and **한국어**.
-- Dynamic Material 3 theming following system preferences.
+## Get started
 
----
+Android requires **Android 8.0 (API 26) or later**. This repository currently provides source code; check [Releases](https://github.com/visiontrail/LanRead-Android/releases) for any published builds. You can build a debug APK as follows.
 
-## Tech Stack & Architecture
+### Requirements
 
-- **Language & Runtime**: Kotlin 2.2.20, Java 17
-- **UI Framework**: Jetpack Compose (BOM 2025.10.01) + Material 3
-- **Architecture**: MVVM + Clean Architecture with Coroutines & StateFlow
-- **Data Persistence**: AndroidX Room 2.8.4 + DataStore Preferences 1.1.7
-- **Build System**: Gradle 9.2.1, Android Gradle Plugin 8.13.0, KSP 2.2.20-2.0.4
-- **Target SDK**: Compile SDK 36, Target SDK 36, Min SDK 26 (Android 8.0+)
+- JDK 17
+- Android SDK with API 36 and the Android command-line tools, or Android Studio
+- Internet access to download Gradle and dependencies
 
----
-
-## Project Structure
-
-```
-LanRead-Android/
-├── app/                  # Main Android application module
-│   ├── src/main/
-│   │   ├── java/com/lanread/app/
-│   │   │   ├── ads/          # AdMob integration
-│   │   │   ├── data/         # Room DB, entities, DAOs, repositories
-│   │   │   ├── ui/           # Jetpack Compose screens, components, viewmodels
-│   │   │   └── util/         # EPUB parser, AI services, preferences
-│   │   ├── res/              # Multi-language string resources, drawables, themes
-│   │   └── assets/           # Sample starter EPUB book
-│   └── build.gradle
-├── e2e-tests/            # End-to-end test cases and verification scripts
-├── tools/                # Developer utilities and inspection scripts
-├── SPEC.md               # Full architecture and porting specification
-└── build.gradle          # Root build configuration
-```
-
----
-
-## Building & Running
-
-### Prerequisites
-- JDK 17+
-- Android SDK (API level 36)
-- Android Studio Ladybug / Meerkat or Command Line Tools
-
-### Build via Gradle
 ```bash
-# Build debug APK
+git clone https://github.com/visiontrail/LanRead-Android.git
+cd LanRead-Android
 ./gradlew assembleDebug
-
-# Output APK location:
-# app/build/outputs/apk/debug/app-debug.apk
 ```
 
-### Debug & Testing
-You can run automated E2E tests and debugging helper scripts:
-```powershell
-# Run debug launcher
-.\debug.bat
+On Windows, use `gradlew.bat assembleDebug`. The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`; install it on a compatible device or emulator. Open the project in Android Studio if you prefer an IDE.
 
-# Run E2E automation suite
-cd e2e-tests
-.\run_e2e_suite.ps1
+AI requests require a reachable AI configuration service and provider credentials. The current source tries the configured service first and falls back to an empty API key if that request fails, so a successful build alone does not guarantee working AI features. Review the configuration and credential handling before deploying a fork; do not commit secrets.
+
+## Technology
+
+- Kotlin 2.2.20, Java 17, Jetpack Compose and Material 3
+- AndroidX Room, DataStore, Kotlin coroutines and StateFlow
+- Android WebView for reader content
+- Gradle wrapper 9.2.1, Android Gradle Plugin 8.13.0, compile/target SDK 36
+
+## Project structure
+
+```text
+app/                  Android app, resources, EPUB parser, AI and data services
+e2e-tests/            End-to-end test cases and Windows automation
+gradle/               Gradle wrapper
+tools/                Developer utilities
+SPEC.md               iOS-to-Android porting specification
 ```
 
----
+`SPEC.md` records the porting specification and may describe intended behavior as well as implemented behavior. Consult the source for current details.
+
+## Development and feedback
+
+Build with `./gradlew assembleDebug`; on Windows, `debug.bat` and `e2e-tests/run_e2e_suite.ps1` provide additional development and end-to-end workflows. See the scripts for their environment requirements before running them.
+
+Report bugs and feature requests in [GitHub Issues](https://github.com/visiontrail/LanRead-Android/issues). Include your device, Android version, steps to reproduce, and any relevant logs without private book content or credentials.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+[MIT](LICENSE).
