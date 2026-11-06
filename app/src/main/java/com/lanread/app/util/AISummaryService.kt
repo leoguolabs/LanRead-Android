@@ -33,18 +33,38 @@ class AISummaryService(private val isAiAllowed: () -> Boolean = { true }) {
         return SummaryState.Ready(summary, keyPoints, generatedAt)
     }
 
-    suspend fun generateBookSummary(book: BookEntity, chapters: List<ParsedChapter>): BookSummary {
+    suspend fun generateBookSummary(
+        book: BookEntity,
+        chapters: List<ParsedChapter>,
+        onProgress: (suspend (SummaryState) -> Unit)? = null
+    ): BookSummary {
         if (!isAiAllowed()) throw AIException("permission_required")
-        state.value = SummaryState.Generating(0.05, "")
+        val initState = SummaryState.Generating(0.05, "")
+        state.value = initState
+        onProgress?.invoke(initState)
 
-        val knowsBook = probeKnowledge(book.title, book.author)
-        val context = buildSummaryContext(chapters, knowsBook)
+        val context = buildSummaryContext(chapters, knowsBook = false)
         val prompt = buildBookSummaryPrompt(book, chapters, context)
-        val response = AIService.chat(prompt, temperature = 0.7, maxTokens = 2000, timeoutSeconds = 60)
+
+        var accumulated = ""
+        val response = try {
+            AIService.chatStream(prompt, temperature = 0.7, maxTokens = 2000, timeoutSeconds = 60) { chunk ->
+                accumulated += chunk
+                val progress = (0.05 + (accumulated.length.toDouble() / 500.0) * 0.9).coerceIn(0.05, 0.95)
+                val genState = SummaryState.Generating(progress, accumulated)
+                state.value = genState
+                onProgress?.invoke(genState)
+            }
+        } catch (e: Exception) {
+            val fallbackResp = AIService.chat(prompt, temperature = 0.7, maxTokens = 2000, timeoutSeconds = 60)
+            simulateStream(fallbackResp, onProgress)
+            fallbackResp
+        }
 
         val (summary, keyPoints) = AIService.parseSummaryResponse(response)
-        simulateStream(summary)
-        state.value = SummaryState.Ready(summary, keyPoints, System.currentTimeMillis())
+        val readyState = SummaryState.Ready(summary, keyPoints, System.currentTimeMillis())
+        state.value = readyState
+        onProgress?.invoke(readyState)
         return BookSummary(summary, keyPoints)
     }
 
@@ -144,17 +164,22 @@ class AISummaryService(private val isAiAllowed: () -> Boolean = { true }) {
         """.trimIndent()
     }
 
-    private suspend fun simulateStream(text: String) {
+    private suspend fun simulateStream(
+        text: String,
+        onProgress: (suspend (SummaryState) -> Unit)? = null
+    ) {
         val words = text.split(" ")
         val chunks = if (words.size > 1) words else text.chunked(4)
         var current = ""
         for ((index, chunk) in chunks.withIndex()) {
             current += if (words.size > 1) "$chunk " else chunk
-            state.value = SummaryState.Generating(
+            val genState = SummaryState.Generating(
                 progress = (index + 1).toDouble() / chunks.size,
                 partialText = current
             )
-            kotlinx.coroutines.delay(50)
+            state.value = genState
+            onProgress?.invoke(genState)
+            kotlinx.coroutines.delay(20)
         }
     }
 

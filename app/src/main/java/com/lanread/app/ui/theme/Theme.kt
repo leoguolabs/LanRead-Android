@@ -22,27 +22,39 @@ val CardGrayDark = Color(0xFF1C1C22)
 private val LightColors = lightColorScheme(
     primary = AccentBlue,
     onPrimary = Color.White,
+    primaryContainer = CardGrayLight,
+    onPrimaryContainer = Color(0xFF007AFF),
     secondary = AccentBlue,
+    onSecondary = Color.White,
+    secondaryContainer = CardGrayLight,
+    onSecondaryContainer = Color(0xFF000000),
     background = Color.White,
     onBackground = Color(0xFF000000),
     surface = Color.White,
     onSurface = Color(0xFF000000),
     surfaceVariant = CardGrayLight,
     onSurfaceVariant = Color(0xFF3C3C43),
-    secondaryContainer = CardGrayLight
+    outline = Color(0xFFC7C7CC),
+    outlineVariant = Color(0xFFE5E5EA)
 )
 
 private val DarkColors = darkColorScheme(
     primary = AccentBlue,
     onPrimary = Color.White,
+    primaryContainer = CardGrayDark,
+    onPrimaryContainer = AccentBlue,
     secondary = AccentBlue,
+    onSecondary = Color.White,
+    secondaryContainer = CardGrayDark,
+    onSecondaryContainer = Color.White,
     background = Color(0xFF000000),
     onBackground = Color(0xFFFFFFFF),
     surface = Color(0xFF1C1C1E),
     onSurface = Color(0xFFFFFFFF),
     surfaceVariant = CardGrayDark,
     onSurfaceVariant = Color(0xFFEBEBF5),
-    secondaryContainer = CardGrayDark
+    outline = Color(0xFF38383A),
+    outlineVariant = Color(0xFF2C2C2E)
 )
 
 val LanReadTypography = Typography(
@@ -61,9 +73,21 @@ fun LanReadTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit
 ) {
+    val colors = if (darkTheme) DarkColors else LightColors
     MaterialTheme(
-        colorScheme = if (darkTheme) DarkColors else LightColors,
+        colorScheme = colors,
         typography = LanReadTypography,
-        content = content
+        content = {
+            androidx.compose.runtime.CompositionLocalProvider(
+                androidx.compose.material3.LocalContentColor provides colors.onBackground
+            ) {
+                androidx.compose.material3.Surface(
+                    color = colors.background,
+                    contentColor = colors.onBackground
+                ) {
+                    content()
+                }
+            }
+        }
     )
 }

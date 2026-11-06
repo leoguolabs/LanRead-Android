@@ -1,5 +1,6 @@
 package com.lanread.app.ui
 
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoGraph
@@ -33,8 +34,7 @@ private enum class PhoneTab(val titleRes: Int) {
 }
 
 @Composable
-fun LanReadRoot() {
-    val settingsViewModel = rememberAppSettingsViewModel()
+fun LanReadRoot(settingsViewModel: AppSettingsViewModel = rememberAppSettingsViewModel()) {
     var selectedTab by rememberSaveable { mutableStateOf(PhoneTab.LIBRARY) }
 
     Scaffold(
@@ -55,13 +55,22 @@ fun LanReadRoot() {
                     )
                 }
             }
-        }
+        },
+        containerColor = androidx.compose.material3.MaterialTheme.colorScheme.background,
+        contentColor = androidx.compose.material3.MaterialTheme.colorScheme.onBackground
     ) { padding ->
-        val modifier = Modifier.padding(padding)
-        when (selectedTab) {
-            PhoneTab.LIBRARY -> LibraryScreen(appSettings = settingsViewModel, modifier = modifier)
-            PhoneTab.PROGRESS -> ProgressScreen(appSettings = settingsViewModel, modifier = modifier)
-            PhoneTab.SETTINGS -> SettingsScreen(appSettings = settingsViewModel, modifier = modifier)
+        androidx.compose.material3.Surface(
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize(),
+            color = androidx.compose.material3.MaterialTheme.colorScheme.background,
+            contentColor = androidx.compose.material3.MaterialTheme.colorScheme.onBackground
+        ) {
+            when (selectedTab) {
+                PhoneTab.LIBRARY -> LibraryScreen(appSettings = settingsViewModel)
+                PhoneTab.PROGRESS -> ProgressScreen(appSettings = settingsViewModel)
+                PhoneTab.SETTINGS -> SettingsScreen(appSettings = settingsViewModel)
+            }
         }
     }
 }

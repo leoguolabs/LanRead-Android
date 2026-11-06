@@ -1,13 +1,9 @@
-package com.lanread.app.ui.reader
+﻿package com.lanread.app.ui.reader
 
 import android.annotation.SuppressLint
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.offset
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -16,18 +12,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.viewinterop.AndroidView
 import com.lanread.app.data.local.entity.BookEntity
 import com.lanread.app.di.AppContainer
 import com.lanread.app.ui.AppSettingsViewModel
 import com.lanread.app.util.ParsedChapter
-import kotlin.math.abs
-import kotlin.math.roundToInt
 
 /**
- * Single-chapter WebView with tap-zone page turns and swipe-to-page.
+ * Single-chapter WebView with tap-zone page turns and touch-driven 1:1 page turns.
  * Mirrors iOS ReaderWebView interaction: <24% tap = prev, >76% = next, center = toolbar.
  */
 @SuppressLint("SetJavaScriptEnabled")
@@ -53,12 +45,8 @@ fun ReaderPageView(
     modifier: Modifier = Modifier
 ) {
     val settings = appSettings.state
-    val context = androidx.compose.ui.platform.LocalContext.current
 
-    var dragOffset by remember { mutableStateOf(0f) }
-    var isDragging by remember { mutableStateOf(false) }
     var webView by remember { mutableStateOf<WebView?>(null) }
-    var lastSwipeTime by remember { mutableStateOf(0L) }
 
     val html = remember(chapter.order, settings.readingFontSize, settings.lineSpacing, settings.pageMargins, darkMode, settings.readingFont) {
         ReaderHtmlBuilder.buildFullHtml(
@@ -67,7 +55,8 @@ fun ReaderPageView(
             lineSpacing = settings.lineSpacing,
             isDarkMode = darkMode,
             pageMarginsPx = settings.pageMargins.toInt(),
-            fontOption = settings.readingFont
+            fontOption = settings.readingFont,
+            initialPageIndex = currentPage
         )
     }
 
@@ -79,6 +68,7 @@ fun ReaderPageView(
     val latestOnSelection by androidx.compose.runtime.rememberUpdatedState(onSelection)
     val latestOnHighlightTap by androidx.compose.runtime.rememberUpdatedState(onHighlightTap)
     val latestRestorePage by androidx.compose.runtime.rememberUpdatedState(currentPage)
+    var isRestoringInitialPage by remember(chapter.order) { mutableStateOf(currentPage != 0) }
     var loadedHtml by remember { mutableStateOf<String?>(null) }
     val bridge = remember(book.id) {
         ReaderBridge(
@@ -88,7 +78,18 @@ fun ReaderPageView(
             onLinkTap = { _, _, _ -> },
             onPageMetrics = { type, value ->
                 if (type == "pageCount") latestOnTotalPages(value)
-                if (type == "currentPage" && !isDragging) latestOnPageSelected(value)
+                if (type == "currentPage") {
+                    if (isRestoringInitialPage) {
+                        if (latestRestorePage < 0 || value == latestRestorePage) {
+                            isRestoringInitialPage = false
+                            if (latestRestorePage < 0) {
+                                latestOnPageSelected(value)
+                            }
+                        }
+                    } else {
+                        latestOnPageSelected(value)
+                    }
+                }
             },
             onPageTap = { zone ->
                 when (zone) {
@@ -98,6 +99,23 @@ fun ReaderPageView(
                 }
             }
         )
+    }
+
+    LaunchedEffect(chapter.order) {
+        if (currentPage != 0) {
+            isRestoringInitialPage = true
+            kotlinx.coroutines.delay(1200)
+            isRestoringInitialPage = false
+        }
+    }
+
+    LaunchedEffect(currentPage, chapter.order) {
+        if (loadedHtml == html && currentPage >= 0) {
+            webView?.evaluateJavascript(
+                "if (window.getCurrentPage && window.getCurrentPage() !== $currentPage) { scrollToPage($currentPage, false); }",
+                null
+            )
+        }
     }
 
     DisposableEffect(chapter.order) {
@@ -125,12 +143,15 @@ fun ReaderPageView(
                 getSettings().mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
                 overScrollMode = android.view.View.OVER_SCROLL_NEVER
                 addJavascriptInterface(bridge, "LanReadBridge")
+
                 webViewClient = object : WebViewClient() {
                     override fun onPageFinished(view: WebView, url: String?) {
                         super.onPageFinished(view, url)
                         // Restore page position after layout (fresh state, not captured)
                         if (latestRestorePage > 0) {
                             view.evaluateJavascript("scrollToPage($latestRestorePage, false)", null)
+                        } else if (latestRestorePage < 0) {
+                            view.evaluateJavascript("if (window.scrollToLastPage) scrollToLastPage(false);", null)
                         }
                     }
                 }
@@ -145,41 +166,11 @@ fun ReaderPageView(
             // Without this the WebView kept the first chapter forever.
             if (loadedHtml != html) {
                 loadedHtml = html
-                dragOffset = 0f
-                isDragging = false
+                isRestoringInitialPage = currentPage != 0
                 view.loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
             }
         },
-        modifier = modifier
-            .offset { IntOffset(dragOffset.roundToInt(), 0) }
-            .pointerInput(chapter.order) {
-                detectDragGestures(
-                    onDragStart = {
-                        isDragging = true
-                        dragOffset = 0f
-                    },
-                    onDragEnd = {
-                        isDragging = false
-                        val width = size.width.toFloat()
-                        val shouldTurn = abs(dragOffset) > width * 0.12f
-                        val turnForward = dragOffset < 0f
-                        dragOffset = 0f
-                        val now = System.currentTimeMillis()
-                        if (shouldTurn && now - lastSwipeTime > 360) {
-                            lastSwipeTime = now
-                            latestOnTurnPage(turnForward)
-                        }
-                    },
-                    onDragCancel = {
-                        isDragging = false
-                        dragOffset = 0f
-                    }
-                ) { change, dragAmount ->
-                    val width = size.width.toFloat()
-                    val candidate = dragOffset + dragAmount.x * 0.65f
-                    dragOffset = candidate.coerceIn(-width * 0.4f, width * 0.4f)
-                }
-            }
+        modifier = modifier.fillMaxSize()
     )
 
     // Apply persisted highlights for this chapter once the WebView has loaded and

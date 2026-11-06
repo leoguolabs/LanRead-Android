@@ -130,6 +130,7 @@ fun ProgressScreen(
                 stringResource(R.string.progress_title),
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onBackground,
                 modifier = Modifier.padding(horizontal = 16.dp)
             )
         }
@@ -141,7 +142,13 @@ fun ProgressScreen(
                     SegmentedButton(
                         selected = selectedRange == range,
                         onClick = { selectedRange = range },
-                        shape = SegmentedButtonDefaults.itemShape(index = index, count = TimeRange.entries.size)
+                        shape = SegmentedButtonDefaults.itemShape(index = index, count = TimeRange.entries.size),
+                        colors = SegmentedButtonDefaults.colors(
+                            activeContainerColor = MaterialTheme.colorScheme.secondaryContainer,
+                            activeContentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                            inactiveContainerColor = Color.Transparent,
+                            inactiveContentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     ) {
                         Text(
                             stringResource(
@@ -225,6 +232,7 @@ fun ProgressScreen(
                     stringResource(R.string.progress_recent_reads),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onBackground,
                     modifier = Modifier.padding(horizontal = 16.dp)
                 )
             }
@@ -243,16 +251,19 @@ private fun StatCard(
     value: String,
     label: String
 ) {
-    Column(
+    androidx.compose.material3.Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        contentColor = MaterialTheme.colorScheme.onSurface,
         modifier = modifier
-            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp))
-            .padding(16.dp)
     ) {
-        Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(22.dp))
-        Spacer(Modifier.height(12.dp))
-        Text(value, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(4.dp))
-        Text(label, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Column(modifier = Modifier.padding(16.dp)) {
+            Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(22.dp))
+            Spacer(Modifier.height(12.dp))
+            Text(value, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(4.dp))
+            Text(label, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }
 
@@ -264,12 +275,13 @@ private fun GoalCard(
     totalMinutes: Int
 ) {
     val percentage = if (totalMinutes > 0) (currentMinutes.toFloat() / totalMinutes).coerceIn(0f, 1f) else 0f
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp))
-            .padding(16.dp)
+    androidx.compose.material3.Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        modifier = modifier.fillMaxWidth()
     ) {
+        Column(modifier = Modifier.padding(16.dp)) {
         Row {
             Column {
                 Text(stringResource(R.string.progress_daily_goal_title), fontWeight = FontWeight.SemiBold)
@@ -318,18 +330,22 @@ private fun GoalCard(
                 }
             }
         }
+        }
     }
 }
 
 @Composable
 private fun RecentReadingCard(entry: RecentEntry, modifier: Modifier = Modifier) {
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp))
-            .padding(12.dp),
-        verticalAlignment = Alignment.CenterVertically
+    androidx.compose.material3.Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        modifier = modifier.fillMaxWidth()
     ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
         Box(
             modifier = Modifier
                 .width(50.dp)
@@ -366,6 +382,7 @@ private fun RecentReadingCard(entry: RecentEntry, modifier: Modifier = Modifier)
                 Spacer(Modifier.weight(1f))
                 Text(formatRelativeTime(entry.lastReadAt), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+        }
         }
     }
 }

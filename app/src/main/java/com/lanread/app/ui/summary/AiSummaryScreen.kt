@@ -41,7 +41,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -65,13 +64,13 @@ import com.lanread.app.util.AISummaryService
 import com.lanread.app.util.ParsedChapter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
-import org.json.JSONObject
 
 /**
  * AI 导读摘要 full-screen page. Mirrors iOS AISummaryView:
- * header (title + 开始阅读), generating view with progress, ready view with
- * 内容摘要 + 关键要点, error view with 重试, bottom 略读模式 entry.
+ * header (title + 开始阅读), overview layout loaded immediately, streaming
+ * partial summary, key points when ready, bottom 略读模式 entry.
  */
 @Composable
 fun AiSummaryRoute(
@@ -87,32 +86,35 @@ fun AiSummaryRoute(
 
     BackHandler(onBack = onClose)
 
-    var summaryState by remember {
+    val cached = remember(card.book.id) {
+        container.aiSummaryService.cachedSummary(card.book)
+    }
+    var summaryState by remember(card.book.id) {
         mutableStateOf<AISummaryService.SummaryState>(
-            container.aiSummaryService.cachedSummary(card.book)
-                ?: AISummaryService.SummaryState.Idle
+            cached ?: AISummaryService.SummaryState.Generating(0.05, "")
         )
     }
-    var hasStarted by remember { mutableStateOf(false) }
 
     LaunchedEffect(card.book.id) {
-        if (!hasStarted) {
-            hasStarted = true
-            val cached = container.aiSummaryService.cachedSummary(card.book)
-            if (cached != null) {
-                kotlinx.coroutines.delay(300)
-                summaryState = cached
-            } else {
-                generateSummary(container, card.book, appSettings) { summaryState = it }
+        if (cached == null) {
+            generateSummary(container, card.book, appSettings) { newState ->
+                summaryState = newState
             }
         }
     }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Column(modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding()
+        ) {
             // Header bar with close button
             Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 IconButton2(onClick = onClose) {
@@ -125,52 +127,223 @@ fun AiSummaryRoute(
                 Spacer(Modifier.weight(1f))
             }
 
-            val state = summaryState
-            when (state) {
-                is AISummaryService.SummaryState.Idle -> {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text(stringResource(R.string.common_loading), color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-                is AISummaryService.SummaryState.Generating -> GeneratingView(state)
-                is AISummaryService.SummaryState.Ready -> ReadyView(
-                    state = state,
-                    book = card.book,
-                    onOpenReader = onOpenReader,
-                    onOpenSkimming = onOpenSkimming
-                )
-                is AISummaryService.SummaryState.Failed -> Column(modifier = Modifier.weight(1f)) {
-                    ErrorView(state.message) {
-                        scope.launch {
-                            generateSummary(container, card.book, appSettings) { summaryState = it }
-                        }
-                    }
+            // Immediately loaded Book Overview Screen content
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp))
+                ) {
+                    // Summary header (AI 导读摘要 + 开始阅读)
                     Row(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 40.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    Icons.Filled.Psychology,
+                                    contentDescription = null,
+                                    tint = AccentBlue,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    stringResource(R.string.ai_summary_title),
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                            Text(
+                                stringResource(R.string.ai_summary_subtitle),
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                         Button(
                             onClick = onOpenReader,
-                            shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = AccentBlue),
-                            modifier = Modifier.weight(1f)
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = AccentBlue)
                         ) {
-                            Icon(Icons.Filled.MenuBook, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text(stringResource(R.string.ai_summary_start_reading))
-                        }
-                        Button(
-                            onClick = onOpenSkimming,
-                            shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF9500)),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Icon(Icons.Filled.Bolt, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text(stringResource(R.string.skimming_mode_badge))
+                            Icon(Icons.Filled.MenuBook, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text(
+                                stringResource(R.string.ai_summary_start_reading),
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
                         }
                     }
-                    Spacer(Modifier.height(24.dp))
+
+                    // AdMob Banner Ad
+                    AdMobBannerView(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 4.dp)
+                    )
+
+                    // Scrollable summary area
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState())
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        when (val state = summaryState) {
+                            is AISummaryService.SummaryState.Ready -> {
+                                // 内容摘要
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Filled.Description, contentDescription = null, tint = AccentBlue, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(stringResource(R.string.ai_summary_content_summary), fontWeight = FontWeight.Medium)
+                                }
+                                MarkdownText(state.summary)
+
+                                // 关键要点
+                                if (state.keyPoints.isNotEmpty()) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Filled.FormatListBulleted, contentDescription = null, tint = Color(0xFFFF9500), modifier = Modifier.size(18.dp))
+                                        Spacer(Modifier.width(6.dp))
+                                        Text(stringResource(R.string.ai_summary_key_points), fontWeight = FontWeight.Medium)
+                                    }
+                                    state.keyPoints.forEach { point ->
+                                        Row {
+                                            Text("·", color = Color(0xFFFF9500), fontWeight = FontWeight.Bold)
+                                            Spacer(Modifier.width(8.dp))
+                                            Text(point, lineHeight = 22.sp)
+                                        }
+                                    }
+                                }
+
+                                // Footer
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Filled.Info, contentDescription = null, modifier = Modifier.size(12.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Spacer(Modifier.width(4.dp))
+                                    Text(stringResource(R.string.ai_disclaimer), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Spacer(Modifier.weight(1f))
+                                    Text(
+                                        stringResource(R.string.ai_summary_generated_at) + " " + formatTimestamp(state.generatedAt),
+                                        fontSize = 10.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+
+                            is AISummaryService.SummaryState.Generating -> {
+                                // Progress bar
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                                    LinearProgressIndicator(
+                                        progress = { state.progress.toFloat() },
+                                        modifier = Modifier.weight(1f),
+                                        color = AccentBlue
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(
+                                        "${(state.progress * 100).toInt()}%",
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+
+                                // 内容摘要
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Filled.Description, contentDescription = null, tint = AccentBlue, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(stringResource(R.string.ai_summary_content_summary), fontWeight = FontWeight.Medium)
+                                }
+
+                                if (state.partialText.isNotEmpty()) {
+                                    MarkdownText(state.partialText)
+                                } else {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.padding(vertical = 12.dp)
+                                    ) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(20.dp),
+                                            strokeWidth = 2.5.dp,
+                                            color = AccentBlue
+                                        )
+                                        Spacer(Modifier.width(10.dp))
+                                        Text(
+                                            stringResource(R.string.ai_summary_analyzing),
+                                            fontSize = 14.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+
+                                // Footer
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Filled.Info, contentDescription = null, modifier = Modifier.size(12.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Spacer(Modifier.width(4.dp))
+                                    Text(stringResource(R.string.ai_disclaimer), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+
+                            is AISummaryService.SummaryState.Failed -> {
+                                ErrorView(state.message) {
+                                    scope.launch {
+                                        summaryState = AISummaryService.SummaryState.Generating(0.05, "")
+                                        generateSummary(container, card.book, appSettings) { summaryState = it }
+                                    }
+                                }
+                            }
+
+                            is AISummaryService.SummaryState.Idle -> {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(vertical = 12.dp)
+                                ) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(20.dp),
+                                        strokeWidth = 2.5.dp,
+                                        color = AccentBlue
+                                    )
+                                    Spacer(Modifier.width(10.dp))
+                                    Text(
+                                        stringResource(R.string.common_loading),
+                                        fontSize = 14.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 略读模式 entry
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 12.dp)
+                        .background(
+                            Brush.horizontalGradient(listOf(Color(0xFFFF9500), Color(0xFFFF9500).copy(alpha = 0.82f))),
+                            RoundedCornerShape(12.dp)
+                        )
+                        .clickable(onClick = onOpenSkimming)
+                        .padding(horizontal = 16.dp, vertical = 14.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Filled.Bolt, contentDescription = null, tint = Color.White)
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            stringResource(R.string.skimming_mode_badge),
+                            color = Color.White,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(Modifier.weight(1f))
+                        Text("›", color = Color.White, fontSize = 18.sp)
+                    }
                 }
             }
         }
@@ -184,11 +357,14 @@ private suspend fun generateSummary(
     setState: (AISummaryService.SummaryState) -> Unit
 ) {
     val service = container.aiSummaryService
-    kotlinx.coroutines.withContext(Dispatchers.IO) {
+    withContext(Dispatchers.IO) {
         try {
-            // Parse chapters from stored metadata
             val chapters = parseStoredChapters(book)
-            val result = service.generateBookSummary(book, chapters)
+            val result = service.generateBookSummary(book, chapters) { interim ->
+                withContext(Dispatchers.Main) {
+                    setState(interim)
+                }
+            }
             // Persist cache
             val dao = container.database.libraryDao()
             dao.findBookById(book.id)?.let { fresh ->
@@ -201,9 +377,14 @@ private suspend fun generateSummary(
                     )
                 )
             }
-            setState(AISummaryService.SummaryState.Ready(result.summary, result.keyPoints, System.currentTimeMillis()))
+            withContext(Dispatchers.Main) {
+                setState(AISummaryService.SummaryState.Ready(result.summary, result.keyPoints, System.currentTimeMillis()))
+            }
         } catch (e: Exception) {
-            setState(AISummaryService.SummaryState.Failed(e.message ?: "error"))
+            android.util.Log.e("AiSummary", "generateSummary error", e)
+            withContext(Dispatchers.Main) {
+                setState(AISummaryService.SummaryState.Failed(e.message ?: "error"))
+            }
         }
     }
 }
@@ -238,164 +419,6 @@ private fun IconButton2(onClick: () -> Unit, content: @Composable () -> Unit) {
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) { content() }
-}
-
-@Composable
-private fun GeneratingView(state: AISummaryService.SummaryState.Generating) {
-    Column(
-        modifier = Modifier.fillMaxSize().padding(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-            LinearProgressIndicator(
-                progress = { state.progress.toFloat() },
-                modifier = Modifier.weight(1f),
-                color = AccentBlue
-            )
-            Spacer(Modifier.width(8.dp))
-            Text("${(state.progress * 100).toInt()}%", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        Spacer(Modifier.height(24.dp))
-        if (state.partialText.isNotEmpty()) {
-            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-                MarkdownText(state.partialText)
-            }
-        } else {
-            CircularProgressIndicator()
-            Spacer(Modifier.height(12.dp))
-            Text(stringResource(R.string.ai_summary_analyzing), fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        Spacer(Modifier.height(16.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Filled.Info, contentDescription = null, modifier = Modifier.size(12.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.width(4.dp))
-            Text(stringResource(R.string.ai_disclaimer), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-    }
-}
-
-@Composable
-private fun ReadyView(
-    state: AISummaryService.SummaryState.Ready,
-    book: BookEntity,
-    onOpenReader: () -> Unit,
-    onOpenSkimming: () -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp)
-    ) {
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp))
-        ) {
-            // Summary header
-            Row(
-                modifier = Modifier.fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .padding(16.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Filled.Psychology, contentDescription = null, tint = AccentBlue, modifier = Modifier.size(22.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text(stringResource(R.string.ai_summary_title), fontWeight = FontWeight.SemiBold)
-                    }
-                    Text(
-                        stringResource(R.string.ai_summary_subtitle),
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Button(
-                    onClick = onOpenReader,
-                    shape = RoundedCornerShape(10.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = AccentBlue)
-                ) {
-                    Icon(Icons.Filled.MenuBook, contentDescription = null, modifier = Modifier.size(14.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text(stringResource(R.string.ai_summary_start_reading), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                }
-            }
-
-            // AdMob Banner Ad
-            AdMobBannerView(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp)
-            )
-
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                // 内容摘要
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Filled.Description, contentDescription = null, tint = AccentBlue, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text(stringResource(R.string.ai_summary_content_summary), fontWeight = FontWeight.Medium)
-                }
-                MarkdownText(state.summary)
-
-                // 关键要点
-                if (state.keyPoints.isNotEmpty()) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Filled.FormatListBulleted, contentDescription = null, tint = Color(0xFFFF9500), modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text(stringResource(R.string.ai_summary_key_points), fontWeight = FontWeight.Medium)
-                    }
-                    state.keyPoints.forEach { point ->
-                        Row {
-                            Text("•", color = Color(0xFFFF9500), fontWeight = FontWeight.Bold)
-                            Spacer(Modifier.width(8.dp))
-                            Text(point, lineHeight = 22.sp)
-                        }
-                    }
-                }
-
-                // Footer
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Filled.Info, contentDescription = null, modifier = Modifier.size(12.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(Modifier.width(4.dp))
-                    Text(stringResource(R.string.ai_disclaimer), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(Modifier.weight(1f))
-                    Text(
-                        stringResource(R.string.ai_summary_generated_at) + " " + formatTimestamp(state.generatedAt),
-                        fontSize = 10.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-        }
-
-        // 略读模式 entry
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 12.dp)
-                .background(
-                    Brush.horizontalGradient(listOf(Color(0xFFFF9500), Color(0xFFFF9500).copy(alpha = 0.82f))),
-                    RoundedCornerShape(12.dp)
-                )
-                .clickable(onClick = onOpenSkimming)
-                .padding(horizontal = 16.dp, vertical = 14.dp)
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Filled.Bolt, contentDescription = null, tint = Color.White)
-                Spacer(Modifier.width(10.dp))
-                Text(stringResource(R.string.skimming_mode_badge), color = Color.White, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.weight(1f))
-                Text("‹", color = Color.White, fontSize = 18.sp)
-            }
-        }
-    }
 }
 
 @Composable
@@ -451,14 +474,24 @@ fun MarkdownText(markdown: String, textColor: Color = MaterialTheme.colorScheme.
                     fontSize = 20.sp,
                     color = textColor
                 )
-                line.startsWith("• ") || line.startsWith("- ") || line.startsWith("* ") -> Row {
-                    Text("• ", color = AccentBlue, fontWeight = FontWeight.Bold)
-                    Text(
-                        stripBoldMarkers(line.drop(2)),
-                        color = textColor
-                    )
+                line.startsWith("• ") || line.startsWith("- ") || line.startsWith("* ") || line.startsWith("· ") || line.startsWith("·") ||
+                    (line.length > 2 && line[0].isDigit() && (line[1] == '.' || line[1] == '、')) -> {
+                    val cleanText = if (line.length > 2 && line[0].isDigit() && (line[1] == '.' || line[1] == '、')) {
+                        line.substring(2).trim()
+                    } else {
+                        line.trimStart('•', '-', '*', '·', ' ').trim()
+                    }
+                    Row {
+                        Text("·", color = Color(0xFFFF9500), fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            stripBoldMarkers(cleanText),
+                            color = textColor,
+                            lineHeight = 22.sp
+                        )
+                    }
                 }
-                else -> Text(stripBoldMarkers(line), color = textColor)
+                else -> Text(stripBoldMarkers(line), color = textColor, lineHeight = 22.sp)
             }
         }
     }

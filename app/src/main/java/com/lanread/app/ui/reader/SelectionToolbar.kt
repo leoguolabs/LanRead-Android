@@ -76,6 +76,7 @@ fun SelectionToolbar(
     Surface(
         shape = RoundedCornerShape(26.dp),
         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.97f),
+        contentColor = MaterialTheme.colorScheme.onSurface,
         shadowElevation = 8.dp,
         modifier = Modifier
             .fillMaxWidth()

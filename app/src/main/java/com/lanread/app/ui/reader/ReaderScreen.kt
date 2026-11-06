@@ -58,6 +58,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.activity.compose.BackHandler
 import android.annotation.SuppressLint
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -71,6 +72,9 @@ import com.lanread.app.ui.effectiveDarkMode
 import com.lanread.app.ui.theme.AccentBlue
 import com.lanread.app.util.EPubParser
 import com.lanread.app.util.ParsedChapter
+import com.lanread.app.util.AIService
+import com.lanread.app.util.aiOutputLanguageName
+import com.lanread.app.data.settings.AppLanguageOption
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -100,6 +104,11 @@ fun ReaderScreen(
     var currentChapterIndex by remember { mutableStateOf(initialChapterIndex) }
     var totalPages by remember { mutableStateOf(1) }
     var currentPage by remember { mutableStateOf(0) }
+    val chapterTotalPages = remember { androidx.compose.runtime.mutableStateMapOf<Int, Int>() }
+
+    LaunchedEffect(settings.readingFontSize, settings.lineSpacing, settings.pageMargins, settings.readingFont) {
+        chapterTotalPages.clear()
+    }
     var showingToolbar by remember { mutableStateOf(false) }
     var showingToc by remember { mutableStateOf(false) }
     var showingReaderSettings by remember { mutableStateOf(false) }
@@ -120,6 +129,8 @@ fun ReaderScreen(
     var aiResponseContent by remember { mutableStateOf("") }
     var aiLoading by remember { mutableStateOf(false) }
     var showingAiResponse by remember { mutableStateOf(false) }
+
+
     var pendingSelectionForAi by remember { mutableStateOf<SelectionPayload?>(null) }
     var pendingHighlightForAi by remember { mutableStateOf<HighlightEntity?>(null) }
 
@@ -134,7 +145,71 @@ fun ReaderScreen(
     }
     // AI 调用暂缓：仅提示（用户要求暂时不接 AI 功能）
     fun startAiAction(action: String) {
-        showHint(context.getString(R.string.ai_error_endpoint))
+        val targetText = pendingHighlightForAi?.selectedText ?: pendingSelectionForAi?.text ?: ""
+        if (targetText.isBlank()) return
+
+        val appLanguage = appSettings.state.language
+        val translationLang = appSettings.state.translationLanguage
+        val sysLang = AppLanguageOption.SYSTEM
+        val targetLangName = aiOutputLanguageName(translationLang, sysLang)
+        val uiLangName = aiOutputLanguageName(appLanguage, sysLang)
+
+        aiResponseTitle = when (action) {
+            "explain" -> context.getString(R.string.reader_ai_explain)
+            "translate" -> context.getString(R.string.reader_ai_translate)
+            "ask" -> context.getString(R.string.reader_ai_ask)
+            else -> context.getString(R.string.ai_summary_title)
+        }
+        aiResponseContent = ""
+        aiLoading = true
+        showingAiResponse = true
+
+        scope.launch {
+            try {
+                val prompt = when (action) {
+                    "translate" -> """
+                        You are a professional translator inside an eBook reader. Translate the following passage into $targetLangName with clear, natural phrasing. Keep the meaning faithful and avoid extra commentary.
+
+                        Passage:
+                        $targetText
+                    """.trimIndent()
+                    "explain" -> """
+                        You help readers understand tricky passages. In $uiLangName, briefly explain the following excerpt in under 120 words. Start with a one-sentence summary, then list 2-3 concise bullet insights only if helpful. Keep tone clear and neutral.
+
+                        Excerpt:
+                        $targetText
+                    """.trimIndent()
+                    "ask" -> """
+                        You are an assistant embedded in an eBook reader. In $uiLangName, answer the reader's question based only on the excerpt when possible. Keep the answer concise, clear, and practical.
+
+                        Question:
+                        $askQuestion
+
+                        Excerpt:
+                        $targetText
+                    """.trimIndent()
+                    else -> targetText
+                }
+
+                val temperature = if (action == "translate") 0.35 else 0.5
+                val maxTokens = if (action == "ask") 620 else 520
+                val result = withContext(Dispatchers.IO) {
+                    AIService.chat(
+                        prompt = prompt,
+                        temperature = temperature,
+                        maxTokens = maxTokens,
+                        timeoutSeconds = 40
+                    )
+                }
+                aiResponseContent = result
+            } catch (e: Exception) {
+                aiResponseContent = (context.getString(R.string.ai_error_network) + ": " + (e.message ?: "")).take(300)
+            } finally {
+                aiLoading = false
+                pendingSelectionForAi = null
+                pendingHighlightForAi = null
+            }
+        }
     }
 
     // Load book chapters
@@ -148,29 +223,39 @@ fun ReaderScreen(
                 } else {
                     loadError = context.getString(R.string.reader_error_file_missing)
                 }
+
+                // Restore saved position when opening without explicit location
+                if (initialChapterIndex == -1) {
+                    val progress = container.database.libraryDao().findProgressByBookId(book.id)
+                    val position = progress?.currentPosition
+                    if (position != null) {
+                        try {
+                            val obj = org.json.JSONObject(position)
+                            currentChapterIndex = obj.optInt("chapterIndex", 0)
+                            currentPage = obj.optInt("pageIndex", 0)
+                            val savedTotal = obj.optInt("totalPages", 1)
+                            if (savedTotal > 0) {
+                                totalPages = savedTotal
+                                chapterTotalPages[currentChapterIndex] = savedTotal
+                            }
+                        } catch (_: Exception) {
+                        }
+                    } else {
+                        currentChapterIndex = 0
+                        currentPage = 0
+                    }
+                } else {
+                    currentChapterIndex = initialChapterIndex
+                    currentPage = 0
+                }
             } catch (e: Exception) {
                 loadError = e.message ?: "load failed"
             } finally {
                 isLoading = false
             }
         }
-        // Restore saved position when opening without explicit location
-        if (initialChapterIndex == -1) {
-            val progress = container.database.libraryDao().findProgressByBookId(book.id)
-            val position = progress?.currentPosition
-            if (position != null) {
-                try {
-                    val obj = org.json.JSONObject(position)
-                    currentChapterIndex = obj.optInt("chapterIndex", 0)
-                    currentPage = obj.optInt("pageIndex", 0)
-                } catch (_: Exception) {
-                }
-            }
-        } else {
-            currentChapterIndex = initialChapterIndex
-        }
         // Status transition: want_to_read/paused -> reading
-        scope.launch(Dispatchers.IO) {
+        container.appScope.launch(Dispatchers.IO) {
             val item = container.database.libraryDao().findLibraryItemByBookId(book.id)
             if (item != null && (item.statusRaw == "want_to_read" || item.statusRaw == "paused")) {
                 container.database.libraryDao().setStatusAndAccess(book.id, "reading", System.currentTimeMillis())
@@ -180,29 +265,37 @@ fun ReaderScreen(
         }
     }
 
+    val latestCurrentPage by androidx.compose.runtime.rememberUpdatedState(currentPage)
+    val latestCurrentChapter by androidx.compose.runtime.rememberUpdatedState(currentChapterIndex)
+    val latestTotalPages by androidx.compose.runtime.rememberUpdatedState(totalPages)
+
     // Save progress on chapter/page change and on dispose
-    fun saveProgress() {
-        scope.launch(Dispatchers.IO) {
+    fun saveProgress(
+        page: Int = latestCurrentPage,
+        chapter: Int = latestCurrentChapter,
+        total: Int = latestTotalPages
+    ) {
+        container.appScope.launch(Dispatchers.IO) {
             val dao = container.database.libraryDao()
             val existing = dao.findProgressByBookId(book.id) ?: return@launch
             val bookTotalPages = maxOf(book.totalPages, 1)
             val chapterTotal = maxOf(chapters.size, 1)
             val fallbackPerPage = maxOf(bookTotalPages / chapterTotal, 1)
-            var globalPage = currentPage + 1
-            for (i in 0 until currentChapterIndex) {
+            var globalPage = page + 1
+            for (i in 0 until chapter) {
                 globalPage += fallbackPerPage
             }
             val position = org.json.JSONObject()
-                .put("chapterIndex", currentChapterIndex)
-                .put("pageIndex", currentPage)
-                .put("totalPages", totalPages)
+                .put("chapterIndex", chapter)
+                .put("pageIndex", page)
+                .put("totalPages", total)
                 .put("globalPage", globalPage)
                 .put("bookTotalPages", bookTotalPages)
                 .toString()
             val percentage = (globalPage.toDouble() / bookTotalPages).coerceIn(0.0, 1.0)
             dao.updateProgress(
                 existing.copy(
-                    currentPage = currentChapterIndex,
+                    currentPage = chapter,
                     currentPosition = position,
                     progressPercentage = percentage,
                     lastReadAt = System.currentTimeMillis(),
@@ -217,8 +310,30 @@ fun ReaderScreen(
         }
     }
 
+
+    BackHandler {
+        if (showingAiResponse) {
+            showingAiResponse = false
+            selectedText = null
+        } else if (selectedText != null) {
+            selectedText = null
+        } else if (showingToc) {
+            showingToc = false
+        } else if (showingReaderSettings) {
+            showingReaderSettings = false
+        } else if (showingBookmarksList) {
+            showingBookmarksList = false
+        } else if (showingHighlightsList) {
+            showingHighlightsList = false
+        } else if (showingToolbar) {
+            showingToolbar = false
+        } else {
+            saveProgress(page = currentPage, chapter = currentChapterIndex, total = totalPages)
+            onDismiss()
+        }
+    }
     DisposableEffect(book.id) {
-        onDispose { saveProgress() }
+        onDispose { saveProgress(page = latestCurrentPage, chapter = latestCurrentChapter, total = latestTotalPages) }
     }
 
     // Load highlights for the current chapter
@@ -299,6 +414,7 @@ fun ReaderScreen(
                     },
                     onTotalPages = { total ->
                         totalPages = total
+                        chapterTotalPages[currentChapterIndex] = total
                         saveProgress()
                     },
                     onToolbarToggle = { showingToolbar = !showingToolbar },
@@ -317,12 +433,31 @@ fun ReaderScreen(
                             if (target in 0 until totalPages) {
                                 webView?.evaluateJavascript("scrollToPage($target, true)", null)
                                 currentPage = target
+                                saveProgress(page = target, chapter = currentChapterIndex, total = totalPages)
                             } else if (forward && currentChapterIndex < chapters.size - 1) {
-                                currentChapterIndex += 1
+                                val nextChapter = currentChapterIndex + 1
+                                currentChapterIndex = nextChapter
                                 currentPage = 0
+                                val nextTotal = chapterTotalPages[nextChapter] ?: 1
+                                totalPages = nextTotal
+                                saveProgress(page = 0, chapter = nextChapter, total = nextTotal)
                             } else if (!forward && currentChapterIndex > 0) {
-                                currentChapterIndex -= 1
-                                currentPage = 0
+                                val prevChapter = currentChapterIndex - 1
+                                val cachedTotal = chapterTotalPages[prevChapter]
+                                val targetPage = if (cachedTotal != null && cachedTotal > 0) {
+                                    cachedTotal - 1
+                                } else {
+                                    -1
+                                }
+                                currentChapterIndex = prevChapter
+                                currentPage = targetPage
+                                val prevTotal = cachedTotal ?: 1
+                                totalPages = prevTotal
+                                saveProgress(
+                                    page = if (targetPage >= 0) targetPage else 0,
+                                    chapter = prevChapter,
+                                    total = prevTotal
+                                )
                             } else {
                                 showHint(
                                     context.getString(
@@ -361,8 +496,9 @@ fun ReaderScreen(
 
                 // Page indicator
                 if (totalPages > 1 && !showingToolbar) {
+                    val displayCurrent = if (currentPage >= 0) currentPage + 1 else totalPages
                     Text(
-                        "${currentPage + 1} / $totalPages",
+                        "$displayCurrent / $totalPages",
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                         modifier = Modifier
@@ -383,7 +519,7 @@ fun ReaderScreen(
                         bookTitle = book.title,
                         chapterTitle = chapter.title,
                         onBack = {
-                            saveProgress()
+                            saveProgress(page = currentPage, chapter = currentChapterIndex, total = totalPages)
                             onDismiss()
                         },
                         onToc = { showingToc = true },
@@ -432,19 +568,22 @@ fun ReaderScreen(
 
         // Floating selection toolbar
         selectedText?.let { sel ->
-            Box(modifier = Modifier.fillMaxSize().padding(top = 80.dp), contentAlignment = Alignment.TopCenter) {
+            Box(modifier = Modifier.fillMaxSize().padding(bottom = 40.dp), contentAlignment = Alignment.BottomCenter) {
                 SelectionToolbar(
                     selection = sel,
                     onHighlight = {
                         val payload = sel
+                        val highlightId = java.util.UUID.randomUUID().toString()
                         selectedText = null
-                        webView?.evaluateJavascript("if (window.getSelection) window.getSelection().removeAllRanges(); if (window.clampVisualViewport) clampVisualViewport();", null)
+                        webView?.evaluateJavascript(
+                            "highlightByOffsets(${payload.start}, ${payload.end}, '#$DEFAULT_HIGHLIGHT_HEX', '$highlightId'); if (window.getSelection) window.getSelection().removeAllRanges(); if (window.clampVisualViewport) clampVisualViewport();", null
+                        )
                         scope.launch(Dispatchers.IO) {
                             val startAnchor = ReaderHtmlBuilder.buildAnchor("", payload.start, currentChapterIndex, payload.pageIndex)
                             val endAnchor = ReaderHtmlBuilder.buildAnchor("", payload.end, currentChapterIndex, payload.pageIndex)
                             container.database.highlightDao().insert(
                                 HighlightEntity(
-                                    id = java.util.UUID.randomUUID().toString(),
+                                    id = highlightId,
                                     bookId = book.id,
                                     selectedText = payload.text,
                                     startPosition = startAnchor,
@@ -459,19 +598,24 @@ fun ReaderScreen(
                             )
                             chapterHighlights = container.database.highlightDao().byBook(book.id)
                         }
-                        scope.launch {
-                            webView?.evaluateJavascript(
-                                "applyHighlightForSelection('#' + '$DEFAULT_HIGHLIGHT_HEX'); if (window.getSelection) window.getSelection().removeAllRanges(); if (window.clampVisualViewport) clampVisualViewport();", null
-                            )
-                        }
                     },
                     onNote = {
                         noteDraft = ""
                         noteTargetHighlightId = null
                         showingNoteEditor = true
                     },
-                    onExplain = { startAiAction("explain") },
-                    onTranslate = { startAiAction("translate") },
+                    onExplain = {
+                        pendingSelectionForAi = sel
+                        selectedText = null
+                        webView?.evaluateJavascript("if (window.getSelection) window.getSelection().removeAllRanges(); if (window.clampVisualViewport) clampVisualViewport();", null)
+                        startAiAction("explain")
+                    },
+                    onTranslate = {
+                        pendingSelectionForAi = sel
+                        selectedText = null
+                        webView?.evaluateJavascript("if (window.getSelection) window.getSelection().removeAllRanges(); if (window.clampVisualViewport) clampVisualViewport();", null)
+                        startAiAction("translate")
+                    },
                     onCopy = {
                         val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
                             as android.content.ClipboardManager
@@ -503,6 +647,7 @@ fun ReaderScreen(
                     showingBookmarksList = false
                     currentChapterIndex = chapterIdx
                     currentPage = pageIdx
+                    saveProgress(page = pageIdx, chapter = chapterIdx)
                 },
                 onDismiss = { showingBookmarksList = false }
             )
@@ -516,6 +661,7 @@ fun ReaderScreen(
                     showingHighlightsList = false
                     currentChapterIndex = chapterIdx
                     currentPage = pageIdx
+                    saveProgress(page = pageIdx, chapter = chapterIdx)
                 },
                 onDismiss = { showingHighlightsList = false }
             )
@@ -560,7 +706,9 @@ fun ReaderScreen(
                                     )
                                 )
                                 kotlinx.coroutines.withContext(Dispatchers.Main) {
-                                    webView?.evaluateJavascript("applyHighlightForSelection('#$DEFAULT_HIGHLIGHT_HEX')", null)
+                                    webView?.evaluateJavascript(
+                                        "highlightByOffsets(${payload.start}, ${payload.end}, '#$DEFAULT_HIGHLIGHT_HEX', '$id'); if (window.getSelection) window.getSelection().removeAllRanges();", null
+                                    )
                                     showHint(context.getString(R.string.reader_highlight_saved_with_note))
                                 }
                             }
@@ -578,8 +726,8 @@ fun ReaderScreen(
         highlightDetail?.let { hl ->
             HighlightDetailSheet(
                 highlight = hl,
-                onExplain = { highlightDetail = null; startAiAction("explain") },
-                onTranslate = { highlightDetail = null; startAiAction("translate") },
+                onExplain = { pendingHighlightForAi = hl; highlightDetail = null; startAiAction("explain") },
+                onTranslate = { pendingHighlightForAi = hl; highlightDetail = null; startAiAction("translate") },
                 onAsk = { pendingHighlightForAi = hl; highlightDetail = null; askQuestion = ""; showingAskComposer = true },
                 onCopy = {
                     val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
@@ -627,7 +775,11 @@ fun ReaderScreen(
                 title = aiResponseTitle,
                 content = aiResponseContent,
                 loading = aiLoading,
-                onDismiss = { showingAiResponse = false }
+                onDismiss = {
+                    showingAiResponse = false
+                    selectedText = null
+                    webView?.evaluateJavascript("if (window.getSelection) window.getSelection().removeAllRanges(); if (window.clampVisualViewport) clampVisualViewport();", null)
+                }
             )
         }
 
@@ -659,6 +811,7 @@ fun ReaderScreen(
                 showingToc = false
                 currentChapterIndex = index
                 currentPage = 0
+                saveProgress(page = 0, chapter = index)
             },
             onDismiss = { showingToc = false }
         )
@@ -680,7 +833,7 @@ fun ReaderTopToolbar(
     onToc: () -> Unit,
     onSettings: () -> Unit
 ) {
-    Surface(color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f)) {
+    Surface(color = MaterialTheme.colorScheme.surface, shadowElevation = 8.dp) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -735,7 +888,7 @@ fun ReaderBottomToolbar(
     onHighlights: () -> Unit,
     onBookmarks: () -> Unit
 ) {
-    Surface(color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f)) {
+    Surface(color = MaterialTheme.colorScheme.surface, shadowElevation = 8.dp) {
         Column(modifier = Modifier.fillMaxWidth().navigationBarsPadding().padding(vertical = 16.dp)) {
             if (chapterCount > 1) {
                 Row(

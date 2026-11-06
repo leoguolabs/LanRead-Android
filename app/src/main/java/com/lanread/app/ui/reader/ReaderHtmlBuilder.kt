@@ -6,7 +6,7 @@ import com.lanread.app.data.settings.ReadingFontOption
 
 /**
  * Builds the paginated reading HTML with exact CSS from iOS ReaderWebView.getMobileOptimizedCSS
- * and the pagination/selection/highlight JS engine.
+ * and the pagination/selection/highlight/touch JS engine.
  */
 object ReaderHtmlBuilder {
 
@@ -20,10 +20,11 @@ object ReaderHtmlBuilder {
         lineSpacing: Double,
         isDarkMode: Boolean,
         pageMarginsPx: Int,
-        fontOption: ReadingFontOption
+        fontOption: ReadingFontOption,
+        initialPageIndex: Int = 0
     ): String {
         val css = mobileOptimizedCss(fontSizePx, lineSpacing, isDarkMode, pageMarginsPx, fontOption)
-        val js = readerJavaScript(isDarkMode)
+        val js = readerJavaScript(isDarkMode, initialPageIndex)
         return """
             <!DOCTYPE html>
             <html>
@@ -72,10 +73,10 @@ object ReaderHtmlBuilder {
         html {
             width: 100%;
             height: 100%;
-            overflow-x: auto;
+            overflow-x: hidden;
             overflow-y: hidden;
             overscroll-behavior: none;
-            touch-action: pan-x;
+            touch-action: pan-y;
         }
 
         body {
@@ -89,7 +90,7 @@ object ReaderHtmlBuilder {
             text-size-adjust: 100%;
             -webkit-text-size-adjust: 100%;
             overscroll-behavior: none;
-            touch-action: pan-x;
+            touch-action: pan-y;
         }
 
         body {
@@ -317,7 +318,39 @@ object ReaderHtmlBuilder {
         """.trimIndent()
     }
 
-    fun readerJavaScript(isDarkMode: Boolean): String = """
+    fun readerJavaScript(isDarkMode: Boolean, initialPageIndex: Int = 0): String = """
+        var __initialPage = $initialPageIndex;
+        var __isRestoring = __initialPage !== 0;
+        var __jsCurrentPage = __initialPage < 0 ? 0 : __initialPage;
+        var __justDragged = false;
+        var __justDraggedTimer = null;
+        var __activeScrollAnimationId = null;
+
+        function resolveInitialTargetPage() {
+            if (__initialPage < 0) {
+                return Math.max(0, getTotalPageCount() - 1);
+            }
+            return __initialPage;
+        }
+
+        function markJustDragged() {
+            __justDragged = true;
+            if (__justDraggedTimer) clearTimeout(__justDraggedTimer);
+            __justDraggedTimer = setTimeout(function() {
+                __justDragged = false;
+            }, 300);
+        }
+
+        function getScroller() {
+            if (document.body && document.body.scrollWidth > document.body.clientWidth) {
+                return document.body;
+            }
+            if (document.documentElement && document.documentElement.scrollWidth > document.documentElement.clientWidth) {
+                return document.documentElement;
+            }
+            return document.scrollingElement || document.body || document.documentElement;
+        }
+
         function normalizeColor(colorHex) {
             if (!colorHex) return '#ffe38f';
             if (colorHex.startsWith('#')) { return colorHex; }
@@ -333,10 +366,12 @@ object ReaderHtmlBuilder {
             return (v && v > 0) ? v : (window.innerWidth || 393);
         }
         function getScrollLeft() {
-            return window.scrollX || document.documentElement.scrollLeft || document.body.scrollLeft || 0;
+            var s = getScroller();
+            return s ? s.scrollLeft : 0;
         }
         function getTotalWidth() {
-            return Math.max(document.documentElement.scrollWidth, document.body.scrollWidth, 0);
+            var s = getScroller();
+            return s ? s.scrollWidth : Math.max(document.documentElement.scrollWidth, document.body.scrollWidth, 0);
         }
         function getTotalPageCount() {
             var perPage = getPerPage();
@@ -369,14 +404,17 @@ object ReaderHtmlBuilder {
             } finally {
                 isApplyingPaginationLayout = false;
             }
+            var target = resolveInitialTargetPage();
+            if (target > 0) {
+                scrollToPage(target, false);
+            }
             return finalPages;
         }
 
-        
         function clampVisualViewport() {
             try {
                 if (window.visualViewport && (Math.abs(window.visualViewport.offsetLeft) > 0.5 || Math.abs(window.visualViewport.offsetTop) > 0.5)) {
-                    var curPage = currentPageIndex();
+                    var curPage = getCurrentPage();
                     var perPage = getPerPage();
                     var targetX = Math.max(0, curPage * perPage);
                     var anchor = document.getElementById('__vv_anchor__');
@@ -397,31 +435,79 @@ object ReaderHtmlBuilder {
             } catch (e) {}
         }
 
-        function setScrollLeft(x, animated) {
+        function cancelScrollAnimation() {
+            if (__activeScrollAnimationId) {
+                cancelAnimationFrame(__activeScrollAnimationId);
+                __activeScrollAnimationId = null;
+            }
+        }
+
+        function setScrollLeft(x, animated, onComplete) {
+            cancelScrollAnimation();
             var perPage = getPerPage();
-            __jsCurrentPage = perPage > 0 ? Math.max(0, Math.round(x / perPage)) : 0;
-            // Primary: window (html is the horizontal scroll container)
-            try {
-                if (animated) {
-                    window.scrollTo({ left: x, top: 0, behavior: 'smooth' });
+            var totalPages = getTotalPageCount();
+            var page = perPage > 0 ? Math.max(0, Math.round(x / perPage)) : 0;
+            if (totalPages > 0 && page >= totalPages) page = totalPages - 1;
+            __jsCurrentPage = page;
+            var scroller = getScroller();
+
+            if (!animated) {
+                if (scroller) scroller.scrollLeft = x;
+                try { document.documentElement.scrollLeft = x; } catch (e) {}
+                try { document.body.scrollLeft = x; } catch (e) {}
+                clampVisualViewport();
+                if (onComplete) onComplete();
+                return;
+            }
+
+            var startX = scroller ? scroller.scrollLeft : 0;
+            var distance = x - startX;
+            if (Math.abs(distance) < 0.5) {
+                if (scroller) scroller.scrollLeft = x;
+                clampVisualViewport();
+                if (onComplete) onComplete();
+                return;
+            }
+
+            var duration = Math.min(280, Math.max(160, Math.abs(distance) * 0.55));
+            var startTime = performance.now();
+
+            function step(now) {
+                var elapsed = now - startTime;
+                var progress = Math.min(1, elapsed / duration);
+                var ease = 1 - Math.pow(1 - progress, 3);
+                var cur = startX + distance * ease;
+                if (scroller) scroller.scrollLeft = cur;
+                if (progress < 1) {
+                    __activeScrollAnimationId = requestAnimationFrame(step);
                 } else {
-                    window.scrollTo(x, 0);
+                    if (scroller) scroller.scrollLeft = x;
+                    __activeScrollAnimationId = null;
+                    clampVisualViewport();
+                    if (onComplete) onComplete();
                 }
-            } catch (e) {}
-            // Fallbacks for engine differences
-            try { document.documentElement.scrollLeft = x; } catch (e) {}
-            try { if (document.scrollingElement) document.scrollingElement.scrollLeft = x; } catch (e) {}
-            try { document.body.scrollLeft = x; } catch (e) {}
-            clampVisualViewport();
+            }
+            __activeScrollAnimationId = requestAnimationFrame(step);
         }
 
-        function scrollToPage(index, animated) {
+        function scrollToPage(index, animated, onComplete) {
             var perPage = getPerPage();
-            var x = Math.max(0, Math.floor(index) * perPage);
-            setScrollLeft(x, animated);
+            var totalPages = getTotalPageCount();
+            var target = (totalPages > 0) ? Math.max(0, Math.min(Math.floor(index), totalPages - 1)) : Math.max(0, Math.floor(index));
+            var x = target * perPage;
+            setScrollLeft(x, animated, onComplete);
         }
 
-        var __jsCurrentPage = 0;
+        function scrollToLastPage(animated) {
+            var target = Math.max(0, getTotalPageCount() - 1);
+            __jsCurrentPage = target;
+            scrollToPage(target, animated || false, function() {
+                nativePost('pageMetrics', { type: 'currentPage', value: target });
+            });
+            nativePost('pageMetrics', { type: 'currentPage', value: target });
+        }
+        window.scrollToLastPage = scrollToLastPage;
+
         function currentPageIndex() {
             var perPage = getPerPage();
             if (perPage <= 0) return 0;
@@ -429,15 +515,194 @@ object ReaderHtmlBuilder {
         }
         function getCurrentPage() { return __jsCurrentPage; }
 
+        // ---- Touch-driven 1:1 Page Turn & Fast Fling ----
+        var touchState = {
+            startX: 0,
+            startY: 0,
+            lastX: 0,
+            startTime: 0,
+            lastTime: 0,
+            velocityX: 0,
+            startScroll: 0,
+            isDragging: false,
+            isHorizontal: null,
+            startPage: 0
+        };
+
+        document.addEventListener('touchstart', function(e) {
+            if (e.touches.length !== 1) return;
+
+            var sel = window.getSelection ? window.getSelection() : null;
+            if (sel && !sel.isCollapsed && String(sel).trim().length > 0) {
+                return;
+            }
+
+            cancelScrollAnimation();
+
+            var touch = e.touches[0];
+            var perPage = getPerPage();
+            var curScroll = getScrollLeft();
+
+            touchState.startX = touch.clientX;
+            touchState.startY = touch.clientY;
+            touchState.lastX = touch.clientX;
+            touchState.startTime = Date.now();
+            touchState.lastTime = touchState.startTime;
+            touchState.velocityX = 0;
+            touchState.startScroll = curScroll;
+            touchState.isDragging = false;
+            touchState.isHorizontal = null;
+            touchState.startPage = perPage > 0 ? Math.round(curScroll / perPage) : 0;
+        }, { passive: true });
+
+        document.addEventListener('touchmove', function(e) {
+            if (e.touches.length !== 1) return;
+
+            var sel = window.getSelection ? window.getSelection() : null;
+            if (sel && !sel.isCollapsed && String(sel).trim().length > 0) {
+                return;
+            }
+
+            var touch = e.touches[0];
+            var dx = touch.clientX - touchState.startX;
+            var dy = touch.clientY - touchState.startY;
+
+            if (touchState.isHorizontal === null) {
+                var absDx = Math.abs(dx);
+                var absDy = Math.abs(dy);
+                if (absDx > 8 || absDy > 8) {
+                    if (absDx >= absDy) {
+                        touchState.isHorizontal = true;
+                        touchState.isDragging = true;
+                    } else {
+                        touchState.isHorizontal = false;
+                    }
+                }
+            }
+
+            if (!touchState.isHorizontal) return;
+
+            if (e.cancelable) e.preventDefault();
+
+            var now = Date.now();
+            var dt = now - touchState.lastTime;
+            if (dt > 8) {
+                touchState.velocityX = (touch.clientX - touchState.lastX) / dt;
+                touchState.lastX = touch.clientX;
+                touchState.lastTime = now;
+            }
+
+            var perPage = getPerPage();
+            var totalPages = getTotalPageCount();
+            var maxScroll = Math.max(0, (totalPages - 1) * perPage);
+            var targetScroll = touchState.startScroll - dx;
+
+            var scroller = getScroller();
+            if (targetScroll < 0) {
+                if (scroller) scroller.scrollLeft = 0;
+                var overscroll = -targetScroll * 0.35;
+                document.body.style.transform = 'translateX(' + overscroll + 'px)';
+            } else if (targetScroll > maxScroll) {
+                if (scroller) scroller.scrollLeft = maxScroll;
+                var overshoot = (targetScroll - maxScroll) * 0.35;
+                document.body.style.transform = 'translateX(' + (-overshoot) + 'px)';
+            } else {
+                document.body.style.transform = '';
+                if (scroller) scroller.scrollLeft = targetScroll;
+            }
+        }, { passive: false });
+
+        document.addEventListener('touchend', function(e) {
+            if (!touchState.isDragging) return;
+
+            markJustDragged();
+
+            var touch = e.changedTouches[0];
+            var totalDx = touch.clientX - touchState.startX;
+            var totalDt = Math.max(1, Date.now() - touchState.startTime);
+            var avgVelocityX = totalDx / totalDt;
+            var releaseVelocityX = touchState.velocityX;
+
+            if (document.body.style.transform) {
+                document.body.style.transition = 'transform 0.22s cubic-bezier(0.25, 1, 0.5, 1)';
+                document.body.style.transform = '';
+                setTimeout(function() { document.body.style.transition = ''; }, 240);
+            }
+
+            var perPage = getPerPage();
+            var totalPages = getTotalPageCount();
+            var startPage = touchState.startPage;
+            var targetPage = startPage;
+
+            // Fast fling: velocity > 0.28 px/ms and distance > 25px
+            var isFling = (Math.abs(releaseVelocityX) > 0.28 || Math.abs(avgVelocityX) > 0.28) && Math.abs(totalDx) > 25;
+
+            if (isFling) {
+                var flingDir = releaseVelocityX !== 0 ? releaseVelocityX : avgVelocityX;
+                if (flingDir < 0) {
+                    targetPage = startPage + 1;
+                } else {
+                    targetPage = startPage - 1;
+                }
+            } else {
+                // Interactive slow drag: threshold is 20% of page width
+                var threshold = perPage * 0.20;
+                if (totalDx < -threshold) {
+                    targetPage = startPage + 1;
+                } else if (totalDx > threshold) {
+                    targetPage = startPage - 1;
+                } else {
+                    targetPage = startPage;
+                }
+            }
+
+            touchState.isDragging = false;
+            touchState.isHorizontal = null;
+
+            if (targetPage >= 0 && targetPage < totalPages) {
+                __jsCurrentPage = targetPage;
+                scrollToPage(targetPage, true, function() {
+                    nativePost('pageMetrics', { type: 'currentPage', value: targetPage });
+                });
+            } else if (targetPage < 0) {
+                scrollToPage(0, true);
+                nativePost('pageTap', { zone: 'prev' });
+            } else if (targetPage >= totalPages) {
+                scrollToPage(totalPages - 1, true);
+                nativePost('pageTap', { zone: 'next' });
+            }
+        }, { passive: false });
+
+        document.addEventListener('touchcancel', function(e) {
+            if (touchState.isDragging) {
+                markJustDragged();
+                document.body.style.transform = '';
+                scrollToPage(touchState.startPage, true);
+                touchState.isDragging = false;
+                touchState.isHorizontal = null;
+            }
+        }, { passive: true });
+
         window.addEventListener('load', function() {
-            applyPagination();
-            nativePost('pageMetrics', { type: 'pageCount', value: getTotalPageCount() });
-            nativePost('pageMetrics', { type: 'currentPage', value: currentPageIndex() });
+            var total = applyPagination();
+            nativePost('pageMetrics', { type: 'pageCount', value: total });
+            var target = resolveInitialTargetPage();
+            if (target > 0) {
+                scrollToPage(target, false);
+                setTimeout(function() {
+                    scrollToPage(target, false);
+                    __isRestoring = false;
+                    nativePost('pageMetrics', { type: 'currentPage', value: getCurrentPage() });
+                }, 150);
+            } else {
+                __isRestoring = false;
+                nativePost('pageMetrics', { type: 'currentPage', value: 0 });
+            }
         });
 
         var resizeTimer = null;
         window.addEventListener('resize', function() {
-            var page = currentPageIndex();
+            var page = getCurrentPage();
             if (resizeTimer) clearTimeout(resizeTimer);
             resizeTimer = setTimeout(function() {
                 applyPagination();
@@ -445,13 +710,19 @@ object ReaderHtmlBuilder {
             }, 120);
         });
 
-        window.addEventListener('scroll', function() {
+        function handleScroll() {
+            var scroller = getScroller();
+            if (scroller && scroller.scrollTop !== 0) { scroller.scrollTop = 0; }
             if (window.scrollY !== 0) { try { window.scrollTo(window.scrollX, 0); } catch (e) {} }
             if (document.documentElement.scrollTop !== 0) { try { document.documentElement.scrollTop = 0; } catch (e) {} }
             __jsCurrentPage = currentPageIndex();
-            nativePost('pageMetrics', { type: 'currentPage', value: currentPageIndex() });
+            if (!__isRestoring && !touchState.isDragging) {
+                nativePost('pageMetrics', { type: 'currentPage', value: __jsCurrentPage });
+            }
             clampVisualViewport();
-        }, { passive: true });
+        }
+        window.addEventListener('scroll', handleScroll, { passive: true });
+        document.addEventListener('scroll', handleScroll, { passive: true, capture: true });
 
         // ---- Text offset mapping ----
         function buildTextSegments() {
@@ -554,12 +825,96 @@ object ReaderHtmlBuilder {
 
         function clearExistingHighlights() {
             var marks = document.querySelectorAll('mark.reader-highlight');
+            var parents = [];
             marks.forEach(function(mark) {
                 var parent = mark.parentNode;
-                while (mark.firstChild) parent.insertBefore(mark.firstChild, mark);
-                parent.removeChild(mark);
-                if (parent.normalize) parent.normalize();
+                if (parent) {
+                    while (mark.firstChild) parent.insertBefore(mark.firstChild, mark);
+                    parent.removeChild(mark);
+                    if (parents.indexOf(parent) === -1) parents.push(parent);
+                }
             });
+            parents.forEach(function(p) {
+                if (p && p.normalize) p.normalize();
+            });
+        }
+
+        function normalizeRangeToTextNodeBoundaries(range) {
+            if (!range || range.collapsed) return range;
+
+            var startContainer = range.startContainer;
+            var endContainer = range.endContainer;
+            var startOffset = range.startOffset;
+            var endOffset = range.endOffset;
+
+            if (startContainer === endContainer && startContainer.nodeType === Node.TEXT_NODE) {
+                var textNode = startContainer;
+                var length = textNode.length;
+                if (length === 0 || startOffset >= endOffset) return range;
+
+                if (endOffset > 0 && endOffset < length) {
+                    textNode.splitText(endOffset);
+                }
+
+                if (startOffset > 0 && startOffset < textNode.length) {
+                    textNode = textNode.splitText(startOffset);
+                }
+
+                range.setStart(textNode, 0);
+                range.setEnd(textNode, textNode.length);
+                return range;
+            }
+
+            if (endContainer.nodeType === Node.TEXT_NODE) {
+                var endLength = endContainer.length;
+                if (endOffset > 0 && endOffset < endLength) {
+                    endContainer.splitText(endOffset);
+                    range.setEnd(endContainer, endContainer.length);
+                } else if (endOffset === endLength) {
+                    range.setEnd(endContainer, endLength);
+                }
+            }
+
+            if (startContainer.nodeType === Node.TEXT_NODE) {
+                if (startOffset > 0 && startOffset < startContainer.length) {
+                    var splitStart = startContainer.splitText(startOffset);
+                    range.setStart(splitStart, 0);
+                } else if (startOffset === 0) {
+                    range.setStart(startContainer, 0);
+                }
+            }
+
+            return range;
+        }
+
+        function collectTextNodesInRange(range) {
+            var nodes = [];
+            if (!range || range.collapsed) return nodes;
+
+            var root = range.commonAncestorContainer;
+            if (root.nodeType === Node.TEXT_NODE) {
+                if (!findHighlightAncestor(root)) {
+                    nodes.push(root);
+                }
+                return nodes;
+            }
+
+            var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+            var node;
+            while ((node = walker.nextNode())) {
+                var content = node.textContent || '';
+                if (!content.length) continue;
+                if (findHighlightAncestor(node)) continue;
+                try {
+                    if (range.intersectsNode(node)) {
+                        if (range.comparePoint(node, content.length) < 0) continue;
+                        if (range.comparePoint(node, 0) > 0) continue;
+                        nodes.push(node);
+                    }
+                } catch (e) {}
+            }
+
+            return nodes;
         }
 
         function wrapTextNodeWithHighlight(node, colorHex, highlightId) {
@@ -577,20 +932,9 @@ object ReaderHtmlBuilder {
 
         function wrapRangeWithHighlights(range, colorHex, highlightId) {
             if (!range || range.collapsed) return false;
-            var textNodes = [];
-            var root = range.commonAncestorContainer;
-            if (root.nodeType === Node.TEXT_NODE) {
-                if (range.intersectsNode(root) && !findHighlightAncestor(root)) textNodes.push(root);
-            } else {
-                var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
-                var node;
-                while ((node = walker.nextNode())) {
-                    var content = node.textContent || '';
-                    if (!content.length) continue;
-                    if (findHighlightAncestor(node)) continue;
-                    try { if (range.intersectsNode(node)) textNodes.push(node); } catch (e) {}
-                }
-            }
+            var workingRange = range.cloneRange();
+            normalizeRangeToTextNodeBoundaries(workingRange);
+            var textNodes = collectTextNodesInRange(workingRange);
             if (textNodes.length === 0) return false;
             var wrapped = 0;
             textNodes.forEach(function(node) {
@@ -617,14 +961,20 @@ object ReaderHtmlBuilder {
             }
         }
 
-        function applyHighlightForSelection(colorHex) {
+        function applyHighlightForSelection(colorHex, highlightId) {
             var payload = serializeSelection();
             if (!payload) return false;
-            return highlightByOffsets(payload.start, payload.end, colorHex, '');
+            var ok = highlightByOffsets(payload.start, payload.end, colorHex, highlightId || '');
+            if (ok && window.getSelection) {
+                var s = window.getSelection();
+                if (s && s.removeAllRanges) s.removeAllRanges();
+            }
+            return ok;
         }
 
         // ---- Highlight tap ----
         document.addEventListener('click', function(event) {
+            if (__justDragged) return;
             var w = getPerPage();
             var x = event.clientX;
             if (x < w * 0.24 || x > w * 0.76) return;
@@ -648,6 +998,7 @@ object ReaderHtmlBuilder {
         // ---- Tap zones (prev/next/toolbar) - WebView consumes touches, so handle here ----
         var lastTapTime = 0;
         document.addEventListener('click', function(event) {
+            if (__justDragged) return;
             var sel = window.getSelection ? window.getSelection() : null;
             if (sel && !sel.isCollapsed && String(sel).trim().length > 0) return;
 
@@ -681,6 +1032,7 @@ object ReaderHtmlBuilder {
 
         // ---- Content link tap ----
         document.addEventListener('click', function(event) {
+            if (__justDragged) return;
             var w = getPerPage();
             var x = event.clientX;
             if (x < w * 0.24 || x > w * 0.76) return;
@@ -711,7 +1063,6 @@ object ReaderHtmlBuilder {
             if (event.preventDefault) event.preventDefault();
             if (event.stopPropagation) event.stopPropagation();
         }, true);
-
 
     """.trimIndent()
 

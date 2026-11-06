@@ -179,7 +179,8 @@ fun LibraryScreen(
             Text(
                 text = stringResource(R.string.library_title),
                 style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onBackground
             )
             Surface(
                 shape = CircleShape,

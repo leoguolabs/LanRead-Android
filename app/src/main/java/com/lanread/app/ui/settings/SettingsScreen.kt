@@ -101,6 +101,7 @@ fun SettingsScreen(
             stringResource(R.string.tab_settings),
             style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onBackground,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
         )
 
@@ -345,12 +346,15 @@ fun SettingsSection(title: String, content: @Composable () -> Unit) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(start = 12.dp, bottom = 6.dp)
         )
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp))
+        androidx.compose.material3.Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            contentColor = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.fillMaxWidth()
         ) {
-            content()
+            Column {
+                content()
+            }
         }
     }
 }

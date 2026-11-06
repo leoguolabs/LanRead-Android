@@ -61,7 +61,7 @@ object AIService {
         temperature: Double,
         maxTokens: Int,
         timeoutSeconds: Long = 60
-    ): String {
+    ): String = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
         val config = configProvider()
         val url = config.endpoint.trimEnd('/') + "/chat/completions"
         val client = okhttp3.OkHttpClient.Builder()
@@ -97,9 +97,82 @@ object AIService {
             val content = root["choices"]?.jsonArray?.get(0)?.jsonObject?.get("message")
                 ?.jsonObject?.get("content")?.jsonPrimitive?.content
                 ?: throw AIException("parse_error")
-            return content
+            content
         }
     }
+
+    suspend fun chatStream(
+        prompt: String,
+        system: String? = null,
+        temperature: Double,
+        maxTokens: Int,
+        timeoutSeconds: Long = 60,
+        onChunk: suspend (String) -> Unit
+    ): String = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        val config = configProvider()
+        val url = config.endpoint.trimEnd('/') + "/chat/completions"
+        val client = okhttp3.OkHttpClient.Builder()
+            .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(timeoutSeconds, java.util.concurrent.TimeUnit.SECONDS)
+            .callTimeout(timeoutSeconds + 30, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+
+        val messages = mutableListOf<Map<String, String>>()
+        if (system != null) messages.add(mapOf("role" to "system", "content" to system))
+        messages.add(mapOf("role" to "user", "content" to prompt))
+
+        val messagesJson = messages.joinToString(",") { m ->
+            "{\"role\":\"${m["role"]}\",\"content\":${jsonString(m["content"]!!)}}"
+        }
+        val isDashScope = config.endpoint.contains("dashscope", ignoreCase = true) ||
+            config.endpoint.contains("aliyun", ignoreCase = true)
+        val thinkingField = if (isDashScope) ",\"enable_thinking\":false" else ""
+        val payload = "{\"model\":${jsonString(config.model)},\"messages\":[$messagesJson]," +
+            "\"temperature\":$temperature,\"max_tokens\":$maxTokens,\"stream\":true$thinkingField}"
+
+        val request = okhttp3.Request.Builder()
+            .url(url)
+            .header("Authorization", "Bearer ${config.apiKey}")
+            .header("Accept", "text/event-stream")
+            .post(payload.toRequestBody("application/json".toMediaTypeOrNull()))
+            .build()
+
+        val fullAccumulator = StringBuilder()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                val err = response.body?.string() ?: ""
+                throw AIException("http_${response.code}: ${err.take(200)}")
+            }
+            val body = response.body ?: throw AIException("empty_response")
+            val reader = body.byteStream().bufferedReader(Charsets.UTF_8)
+            while (true) {
+                val line = reader.readLine() ?: break
+                val trimmed = line.trim()
+                if (trimmed.isEmpty() || !trimmed.startsWith("data:")) continue
+                val dataContent = trimmed.removePrefix("data:").trim()
+                if (dataContent == "[DONE]") break
+                try {
+                    val root = json.parseToJsonElement(dataContent).jsonObject
+                    val choices = root["choices"]?.jsonArray
+                    if (choices != null && choices.isNotEmpty()) {
+                        val delta = choices[0].jsonObject["delta"]?.jsonObject
+                        val deltaContent = delta?.get("content")?.jsonPrimitive?.content
+                        if (!deltaContent.isNullOrEmpty()) {
+                            fullAccumulator.append(deltaContent)
+                            onChunk(deltaContent)
+                        }
+                    }
+                } catch (_: Exception) {
+                }
+            }
+        }
+        val result = fullAccumulator.toString()
+        if (result.isBlank()) {
+            throw AIException("empty_stream_response")
+        }
+        result
+    }
+
 
     fun parseSummaryResponse(response: String): Pair<String, List<String>> {
         val lines = response.lines()
@@ -109,17 +182,23 @@ object AIService {
         for (line in lines) {
             val trimmed = line.trim()
             if (trimmed.isEmpty()) continue
-            val isBullet = trimmed.startsWith("•") || trimmed.startsWith("- ") ||
-                trimmed.startsWith("* ") || trimmed.startsWith("·")
             val lower = trimmed.lowercase()
             if (lower.startsWith("key points") || lower.startsWith("关键要点") ||
                 lower.startsWith("要点") || lower.startsWith("キーポイント") || lower.startsWith("핵심")) {
                 inKeyPoints = true
                 continue
             }
+            val isBullet = trimmed.startsWith("•") || trimmed.startsWith("- ") ||
+                trimmed.startsWith("* ") || trimmed.startsWith("·") ||
+                (trimmed.length > 2 && trimmed[0].isDigit() && (trimmed[1] == '.' || trimmed[1] == '、'))
             if (isBullet) {
                 inKeyPoints = true
-                keyPoints.add(trimmed.trimStart('•', '-', '*', '·', ' ').trim())
+                val cleanPoint = if (trimmed.length > 2 && trimmed[0].isDigit() && (trimmed[1] == '.' || trimmed[1] == '、')) {
+                    trimmed.substring(2).trim()
+                } else {
+                    trimmed.trimStart('•', '-', '*', '·', ' ').trim()
+                }
+                keyPoints.add(cleanPoint)
                 continue
             }
             if (trimmed.startsWith("#")) {

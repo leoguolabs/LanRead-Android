@@ -15,4 +15,5 @@ class AppContainer(private val context: Context) {
     val readingStatusService: ReadingStatusService by lazy { ReadingStatusService(database) }
     val dailyStats: ReadingDailyStatsStore by lazy { ReadingDailyStatsStore(context) }
     val aiSummaryService: AISummaryService by lazy { AISummaryService(isAiAllowed = { true }) }
+    val appScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO)
 }
